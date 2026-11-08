@@ -5,6 +5,13 @@
 
 import React, { useState, useEffect } from 'react';
 import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  User as FirebaseUser,
+} from 'firebase/auth';
+import {
   collection,
   query,
   where,
@@ -19,7 +26,6 @@ import confetti from 'canvas-confetti';
 import {
   KeyRound,
   CheckCircle2,
-  XCircle,
   Loader2,
   Globe,
   User,
@@ -29,7 +35,6 @@ import {
   ShieldCheck,
   Copy,
   ExternalLink,
-  RotateCcw,
   BookOpen,
   Crown,
   Database,
@@ -38,10 +43,22 @@ import {
   HardDrive,
   FolderCheck,
   AlertTriangle,
+  Lock,
+  Eye,
+  EyeOff,
+  LogIn,
+  LogOut,
+  FileText,
+  UploadCloud,
+  Library,
+  Compass,
+  Bookmark,
+  Layers,
 } from 'lucide-react';
 
-import { db } from './firebase.ts';
-export { db };
+import { db, auth, firebaseConfig, firebaseStatus } from './firebase.ts';
+export { db, auth, firebaseConfig, firebaseStatus };
+
 
 const ROOT_DRIVE_FOLDER_ID = '1vncgfUnvay174cvzERBqt_hyqRBSoY8w';
 
@@ -65,6 +82,32 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   return errInfo;
 }
 
+function getAuthErrorMessage(errorCode: string): string {
+  switch (errorCode) {
+    case 'auth/email-already-in-use':
+      return 'Este correo electrónico ya está registrado. Por favor, ve a la pestaña "Iniciar Sesión".';
+    case 'auth/invalid-email':
+      return 'El formato del correo electrónico ingresado no es válido.';
+    case 'auth/weak-password':
+      return 'La contraseña debe tener al menos 6 caracteres.';
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return 'Credenciales incorrectas. Verifica tu correo y contraseña e inténtalo de nuevo.';
+    case 'auth/too-many-requests':
+      return 'Demasiados intentos fallidos. Por seguridad, espera unos instantes antes de volver a intentar.';
+    case 'auth/network-request-failed':
+      return 'Error de conexión de red. Verifica tu acceso a internet.';
+    case 'auth/operation-not-allowed':
+      return 'El método de inicio de sesión con Correo/Contraseña (Email/Password) no está habilitado en Firebase Authentication. Ve a Firebase Console > Authentication > Sign-in method y habilítalo.';
+    case 'auth/api-key-not-valid':
+    case 'auth/invalid-api-key':
+      return 'La clave VITE_FIREBASE_API_KEY no es válida para este proyecto de Firebase. Revisa que no contenga tildes o caracteres especiales (como la "í" en SEMdíQIU) y cópiala directamente desde la consola de Firebase.';
+    default:
+      return 'Ocurrió un error en la autenticación. Verifica tus datos e inténtalo de nuevo.';
+  }
+}
+
 // Master Code & Author Types
 interface MasterCodeRecord {
   id: string;
@@ -77,9 +120,11 @@ interface MasterCodeRecord {
 }
 
 interface AuthorRecord {
+  id?: string;
+  uid?: string;
   name: string;
   email: string;
-  slug: string;
+  role: string;
   masterCode: string;
   plan: string;
   membershipStatus: string;
@@ -94,50 +139,59 @@ interface AuthorRecord {
 }
 
 export default function App() {
-  // Stepper state: 'code' | 'details' | 'success'
-  const [step, setStep] = useState<'code' | 'details' | 'success'>('code');
+  // Global Auth state
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [authorProfile, setAuthorProfile] = useState<AuthorRecord | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  // Master code validation
-  const [inputCode, setInputCode] = useState('');
-  const [validating, setValidating] = useState(false);
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const [validatedCode, setValidatedCode] = useState<MasterCodeRecord | null>(null);
+  // Authentication Mode Tabs: 'activate' (Activación por Primera Vez) | 'login' (Iniciar Sesión)
+  const [activeTab, setActiveTab] = useState<'activate' | 'login'>('activate');
 
-  // Author details form
-  const [authorName, setAuthorName] = useState('');
-  const [authorEmail, setAuthorEmail] = useState('');
-  const [subdomainSlug, setSubdomainSlug] = useState('');
-  const [isCustomSlug, setIsCustomSlug] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [slugChecking, setSlugChecking] = useState(false);
-  const [slugAvailable, setSlugAvailable] = useState<boolean | null>(null);
-  const [slugFormatError, setSlugFormatError] = useState<string | null>(null);
+  // Tab 1: Formulario de Activación por Primera Vez
+  const [activationCode, setActivationCode] = useState('');
+  const [activationName, setActivationName] = useState('');
+  const [activationEmail, setActivationEmail] = useState('');
+  const [activationPassword, setActivationPassword] = useState('');
+  const [showActivationPassword, setShowActivationPassword] = useState(false);
+  const [isActivating, setIsActivating] = useState(false);
+  const [activationError, setActivationError] = useState<string | null>(null);
 
-  // Registered author result
-  const [registeredAuthor, setRegisteredAuthor] = useState<AuthorRecord | null>(null);
-  const [copiedLink, setCopiedLink] = useState(false);
+  // Tab 2: Formulario de Iniciar Sesión (Visitas recurrentes)
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  // UI feedback & sandbox
   const [copiedFolderId, setCopiedFolderId] = useState(false);
-
-  // Live admin/test sandbox
+  const [copiedCodeNotice, setCopiedCodeNotice] = useState<string | null>(null);
   const [showSandbox, setShowSandbox] = useState(false);
   const [liveCodes, setLiveCodes] = useState<MasterCodeRecord[]>([]);
   const [isSeeding, setIsSeeding] = useState(false);
-  const [copiedCodeNotice, setCopiedCodeNotice] = useState<string | null>(null);
 
-  // Verify connection once on mount
+  // Estado de validación por campo 'code' en tiempo real
+  const [codeValidating, setCodeValidating] = useState(false);
+  const [codeValidationStatus, setCodeValidationStatus] = useState<{
+    valid: boolean;
+    plan?: string;
+    message?: string;
+  } | null>(null);
+
+  // Verify connection once on mount using query by field where("code", "==", ...)
   useEffect(() => {
     async function testConnection() {
       try {
-        await getDocFromServer(doc(db, 'master_codes', '_ping_connection'));
+        const pingQuery = query(collection(db, 'master_codes'), where('code', '==', '_ping_connection'));
+        await getDocs(pingQuery);
       } catch (err) {
-        // Expected if document doesn't exist, simply validates network/firestore reachable
+        // Handled silently
       }
     }
     testConnection();
   }, []);
 
-  // Listen to live master_codes for real-time sandbox visualization
+  // Listen to live master_codes for the Demo Codes drawer
   useEffect(() => {
     const q = collection(db, 'master_codes');
     const unsubscribe = onSnapshot(
@@ -151,14 +205,15 @@ export default function App() {
         const codesList: MasterCodeRecord[] = snapshot.docs
           .filter((docSnap) => docSnap.id !== '_ping_connection')
           .map((docSnap) => ({
-            id: docSnap.id,
-            code: docSnap.data().code || docSnap.id,
+            id: docSnap.id, // ID automático asignado por Firestore
+            code: docSnap.data().code, // Campo "code" guardado dentro del documento
             used: !!docSnap.data().used,
             plan: docSnap.data().plan || 'Membresía Anual BMC',
             createdAt: docSnap.data().createdAt,
             usedAt: docSnap.data().usedAt,
             usedBy: docSnap.data().usedBy,
-          }));
+          }))
+          .filter((item) => Boolean(item.code));
         setLiveCodes(codesList);
       },
       (error) => {
@@ -168,156 +223,132 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Helper to format input code (uppercase, trim)
-  const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInputCode(e.target.value.toUpperCase().trim());
-    setValidationError(null);
-  };
-
-  // Strict sanitization for Netlify compatibility (only lowercase a-z, 0-9, and single hyphens)
-  const sanitizeSlugInput = (raw: string): string => {
-    return raw
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '') // remove accents
-      .replace(/[^a-z0-9-]/g, '') // remove any character not in [a-z0-9-]
-      .replace(/-+/g, '-'); // collapse multiple hyphens
-  };
-
-  // Validates Netlify / RFC 1123 DNS subdomain criteria
-  const validateSlugFormat = (slug: string): { valid: boolean; error?: string } => {
-    if (!slug) {
-      return { valid: false, error: 'Ingresa un subdominio para tu portal.' };
-    }
-    if (slug.length < 3) {
-      return { valid: false, error: 'Mínimo 3 caracteres requeridos.' };
-    }
-    if (slug.length > 63) {
-      return { valid: false, error: 'Máximo 63 caracteres permitidos.' };
-    }
-    if (slug.startsWith('-')) {
-      return { valid: false, error: 'No puede comenzar con un guion (-).' };
-    }
-    if (slug.endsWith('-')) {
-      return { valid: false, error: 'No puede terminar con un guion (-).' };
-    }
-    if (slug.includes('--')) {
-      return { valid: false, error: 'No se permiten guiones consecutivos (--).' };
-    }
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {
-      return { valid: false, error: 'Solo se permiten letras minúsculas (a-z), números (0-9) y guiones simples.' };
-    }
-    return { valid: true };
-  };
-
-  // Helper to auto-generate slug from name if not manually modified
-  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const name = e.target.value;
-    setAuthorName(name);
-    if (!isCustomSlug) {
-      const generated = sanitizeSlugInput(name.replace(/\s+/g, '-')).replace(/^-|-$/g, '');
-      setSubdomainSlug(generated);
-      const validation = validateSlugFormat(generated);
-      if (!validation.valid) {
-        setSlugFormatError(generated.length >= 3 ? validation.error || null : null);
-        setSlugAvailable(null);
+  // Listen to Firebase Auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
+      if (user) {
+        await fetchAuthorProfile(user);
       } else {
-        setSlugFormatError(null);
-        checkSlugAvailability(generated);
+        setAuthorProfile(null);
       }
-    }
-  };
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  const handleSlugChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setIsCustomSlug(true);
-    const cleaned = sanitizeSlugInput(e.target.value);
-    setSubdomainSlug(cleaned);
-
-    const validation = validateSlugFormat(cleaned);
-    if (!validation.valid) {
-      setSlugFormatError(validation.error || null);
-      setSlugAvailable(null);
-    } else {
-      setSlugFormatError(null);
-      checkSlugAvailability(cleaned);
-    }
-  };
-
-  // Check if subdomain slug is already used
-  const checkSlugAvailability = async (slugCandidate: string) => {
-    const validation = validateSlugFormat(slugCandidate);
-    if (!validation.valid) {
-      setSlugAvailable(null);
-      return;
-    }
-    setSlugChecking(true);
+  // Fetch author record from Firestore
+  const fetchAuthorProfile = async (user: FirebaseUser) => {
     try {
       const authorsRef = collection(db, 'authors');
-      const q = query(authorsRef, where('slug', '==', slugCandidate));
-      const snap = await getDocs(q);
-      setSlugAvailable(snap.empty);
+      // Query by email
+      const qEmail = query(authorsRef, where('email', '==', user.email?.toLowerCase()));
+      const snap = await getDocs(qEmail);
+
+      if (!snap.empty) {
+        const docData = snap.docs[0].data() as AuthorRecord;
+        setAuthorProfile({
+          ...docData,
+          id: snap.docs[0].id,
+        });
+        return;
+      }
+
+      // Query by UID
+      const qUid = query(authorsRef, where('uid', '==', user.uid));
+      const snapUid = await getDocs(qUid);
+
+      if (!snapUid.empty) {
+        const docData = snapUid.docs[0].data() as AuthorRecord;
+        setAuthorProfile({
+          ...docData,
+          id: snapUid.docs[0].id,
+        });
+        return;
+      }
+
+      // Fallback profile if record not yet synchronized
+      const fallbackProfile: AuthorRecord = {
+        uid: user.uid,
+        name: user.displayName || user.email?.split('@')[0] || 'Autor BMC',
+        email: user.email || '',
+        role: 'author',
+        masterCode: 'VINCULADO',
+        plan: 'Membresía Anual BMC Creators',
+        membershipStatus: 'active',
+        driveSyncReady: true,
+        driveFolderStatus: 'created',
+        driveRootFolderId: ROOT_DRIVE_FOLDER_ID,
+        driveRootPath: `/BMC_EDITORIAL/`,
+        createdAt: new Date().toISOString(),
+      };
+      setAuthorProfile(fallbackProfile);
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, 'authors');
-    } finally {
-      setSlugChecking(false);
     }
   };
 
-  // 1. Validate Master Code against Firestore
-  const handleValidateCode = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const cleanCode = inputCode.trim().toUpperCase();
+  // Helper to format input code
+  const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value.toUpperCase().trim();
+    setActivationCode(val);
+    setActivationError(null);
+    setCodeValidationStatus(null);
+  };
 
-    if (!cleanCode) {
-      setValidationError('Por favor ingresa tu Código Maestro.');
+  // Consulta exacta por campo: query(collection(db, 'master_codes'), where('code', '==', cleanCode))
+  // Se busca en el campo "code" del documento, ya que los documentos tienen IDs automáticos generados por Firestore
+  const validateCodeByField = async (codeCandidate?: string) => {
+    const targetCode = (codeCandidate !== undefined ? codeCandidate : activationCode).trim().toUpperCase();
+    if (!targetCode) {
+      setCodeValidationStatus(null);
       return;
     }
 
-    setValidating(true);
-    setValidationError(null);
-
+    setCodeValidating(true);
     try {
       const codesRef = collection(db, 'master_codes');
-      const q = query(codesRef, where('code', '==', cleanCode));
-      const querySnapshot = await getDocs(q);
+      // Consulta estricta por campo (where("code", "==", targetCode))
+      const qCode = query(codesRef, where('code', '==', targetCode));
+      const codeSnapshot = await withTimeout(
+        getDocs(qCode),
+        8000,
+        'Tiempo de espera al consultar Firestore.'
+      );
 
-      if (querySnapshot.empty) {
-        setValidationError(
-          'Código no encontrado. Verifica con el administrador de BMC Creators que tu anualidad esté confirmada.'
-        );
-        setValidating(false);
+      if (codeSnapshot.empty) {
+        setCodeValidationStatus({
+          valid: false,
+          message: 'Código no encontrado en el campo "code" de master_codes.',
+        });
         return;
       }
 
-      const codeDoc = querySnapshot.docs[0];
-      const codeData = codeDoc.data();
+      // Documento encontrado mediante la consulta del campo 'code' (el ID del documento es automático)
+      const matchedDoc = codeSnapshot.docs[0];
+      const data = matchedDoc.data();
 
-      if (codeData.used === true) {
-        setValidationError(
-          `Este código ya fue utilizado${codeData.usedBy ? ` por ${codeData.usedBy}` : ''}. Si crees que es un error, contacta a soporte.`
-        );
-        setValidating(false);
+      if (data.used === true) {
+        setCodeValidationStatus({
+          valid: false,
+          message: `Código ya utilizado${data.usedBy ? ` por ${data.usedBy}` : ''}.`,
+        });
         return;
       }
 
-      // Valid and unused!
-      const validRecord: MasterCodeRecord = {
-        id: codeDoc.id,
-        code: codeData.code,
-        used: false,
-        plan: codeData.plan || 'Membresía Anual BMC Creators',
-      };
-      setValidatedCode(validRecord);
-      setStep('details');
+      setCodeValidationStatus({
+        valid: true,
+        plan: data.plan || 'Membresía Anual BMC Creators',
+        message: `Código disponible (${data.plan || 'Membresía Anual BMC Creators'})`,
+      });
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, 'master_codes');
-      setValidationError('Ocurrió un error al verificar en la base de datos. Inténtalo de nuevo.');
+      console.error('Error al validar código por campo code:', err);
     } finally {
-      setValidating(false);
+      setCodeValidating(false);
     }
   };
 
-  // Helper promise wrapper with timeout to ensure Firestore operations never freeze indefinitely
+  // Timeout helper to avoid infinite hanging
   const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> => {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -336,151 +367,214 @@ export default function App() {
     });
   };
 
-  // 2. Submit Author Registration: Validates master_codes in Firestore, creates authors record, and guarantees loading state removal
-  const handleRegisterAuthor = async (e: React.FormEvent) => {
+  // =========================================================================
+  // 1. LÓGICA DE ACTIVACIÓN POR PRIMERA VEZ (TAB 1)
+  // =========================================================================
+  const handleActivation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validatedCode) return;
 
-    const trimmedName = authorName.trim();
-    const trimmedEmail = authorEmail.trim().toLowerCase();
-    const trimmedSlug = sanitizeSlugInput(subdomainSlug.trim());
-    const slugValidation = validateSlugFormat(trimmedSlug);
+    const cleanCode = activationCode.trim().toUpperCase();
+    const cleanName = activationName.trim();
+    const cleanEmail = activationEmail.trim().toLowerCase();
+    const password = activationPassword;
 
-    if (!trimmedName) {
-      setSubmitError('Por favor ingresa tu nombre completo.');
+    // Client-side validations
+    if (!cleanCode) {
+      setActivationError('Ingresa tu Código de Activación o Código Maestro.');
       return;
     }
-    if (!trimmedEmail || !/^\S+@\S+\.\S+$/.test(trimmedEmail)) {
-      setSubmitError('Por favor ingresa un correo electrónico válido.');
+    if (!cleanName) {
+      setActivationError('Ingresa tu Nombre de Autor o Seudónimo Editorial.');
       return;
     }
-    if (!slugValidation.valid) {
-      setSubmitError(slugValidation.error || 'Subdominio inválido para Netlify.');
+    if (!cleanEmail || !/^\S+@\S+\.\S+$/.test(cleanEmail)) {
+      setActivationError('Ingresa un correo electrónico válido.');
       return;
     }
-    if (slugAvailable === false) {
-      setSubmitError('El subdominio solicitado ya está en uso. Elige otro.');
+    if (!password || password.length < 6) {
+      setActivationError('La contraseña debe tener un mínimo de 6 caracteres.');
       return;
     }
 
-    setIsSubmitting(true);
-    setSubmitError(null);
+    if (!firebaseConfig.apiKey) {
+      setActivationError('No se encontró la clave de Firebase (VITE_FIREBASE_API_KEY). Configura las variables de entorno en .env o en el panel de despliegue.');
+      return;
+    }
+
+    setIsActivating(true);
+    setActivationError(null);
 
     try {
-      // Step A: Re-validate Master Code in master_codes to ensure it is still unused in Firestore
+      // Step A: Consulta por campo en Firestore: where("code", "==", cleanCode)
+      // Los documentos tienen IDs automáticos y el código se busca estrictamente dentro del campo 'code'
       const codesRef = collection(db, 'master_codes');
-      const qCode = query(codesRef, where('code', '==', validatedCode.code.trim().toUpperCase()));
+      const qCode = query(codesRef, where('code', '==', cleanCode));
       const codeSnapshot = await withTimeout(
         getDocs(qCode),
         8000,
-        'Tiempo de espera agotado al conectar con Firebase Firestore. Verifica tu conexión a internet.'
+        'Tiempo de espera agotado al conectar con Firestore. Verifica tu conexión.'
       );
 
       if (codeSnapshot.empty) {
-        throw new Error(`El Código Maestro "${validatedCode.code}" no existe en la base de datos de Firebase.`);
-      }
-
-      const activeCodeDoc = codeSnapshot.docs[0];
-      const activeCodeData = activeCodeDoc.data();
-
-      if (activeCodeData.used === true) {
         throw new Error(
-          `Este Código Maestro ya fue canjeado${activeCodeData.usedBy ? ` por ${activeCodeData.usedBy}` : ''}. Utiliza un código válido disponible.`
+          `El código "${cleanCode}" no fue encontrado en el campo "code" de la colección master_codes. Verifica con el administrador de Buenos Malos Consejos.`
         );
       }
 
-      // Step B: Double-check slug availability in authors collection
-      const authorsRef = collection(db, 'authors');
-      const qSlug = query(authorsRef, where('slug', '==', trimmedSlug));
-      const slugSnapshot = await withTimeout(
-        getDocs(qSlug),
-        8000,
-        'Tiempo de espera agotado al verificar disponibilidad del subdominio en Firestore.'
-      );
+      // Se obtiene el documento resultante de la consulta por campo (su doc.id es autogenerado)
+      const codeDoc = codeSnapshot.docs[0];
+      const codeData = codeDoc.data();
 
-      if (!slugSnapshot.empty) {
-        throw new Error(`El subdominio "${trimmedSlug}" ya está registrado por otro autor. Elige otro nombre.`);
+      if (codeData.used === true) {
+        throw new Error(
+          `Este código ya fue utilizado${codeData.usedBy ? ` por ${codeData.usedBy}` : ''}. Si crees que se trata de un error, contacta a soporte.`
+        );
       }
 
-      // Step C: Allocate Google Drive subfolder structure under root 1vncgfUnvay174cvzERBqt_hyqRBSoY8w
+      // Step B: Registrar al usuario en Firebase Authentication
+      const userCredential = await withTimeout(
+        createUserWithEmailAndPassword(auth, cleanEmail, password),
+        10000,
+        'Tiempo de espera agotado en Firebase Authentication.'
+      );
+      const user = userCredential.user;
+
+      // Step C: Preparar carpeta Google Drive asignada para manuscritos del autor
       const generatedFolderId = `1bmc_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
       const driveFolderUrl = `https://drive.google.com/drive/folders/${generatedFolderId}`;
 
+      // Step D: Guardar perfil en la colección "authors" (con nombre, correo, rol 'author', etc.)
       const authorPayload: AuthorRecord = {
-        name: trimmedName,
-        email: trimmedEmail,
-        slug: trimmedSlug,
-        masterCode: validatedCode.code,
-        plan: validatedCode.plan || 'Membresía Anual BMC Creators',
+        uid: user.uid,
+        name: cleanName,
+        email: cleanEmail,
+        role: 'author',
+        masterCode: cleanCode,
+        plan: codeData.plan || 'Membresía Anual BMC Creators',
         membershipStatus: 'active',
         driveSyncReady: true,
         driveFolderStatus: 'created',
         driveFolderId: generatedFolderId,
         driveFolderUrl: driveFolderUrl,
-        driveFolderName: `${trimmedName} (${trimmedSlug})`,
+        driveFolderName: `${cleanName} - Manuscritos`,
         driveRootFolderId: ROOT_DRIVE_FOLDER_ID,
-        driveRootPath: `/BMC_CREATORS/${trimmedSlug}/`,
+        driveRootPath: `/BMC_EDITORIAL/${cleanName}/`,
         createdAt: new Date().toISOString(),
       };
 
-      // Step D: Write new Author record to 'authors' collection
       await withTimeout(
         addDoc(collection(db, 'authors'), authorPayload),
         8000,
-        'Tiempo de espera agotado al guardar el perfil en la colección authors de Firebase.'
+        'Tiempo de espera al guardar el perfil del autor en Firestore.'
       );
 
-      // Step E: Mark master code document as used in 'master_codes'
-      const codeDocRef = doc(db, 'master_codes', activeCodeDoc.id);
+      // Step E: Marcar el código como usado en la colección "master_codes"
+      const codeDocRef = doc(db, 'master_codes', codeDoc.id);
       await withTimeout(
         updateDoc(codeDocRef, {
           used: true,
           usedAt: new Date().toISOString(),
-          usedBy: trimmedEmail,
+          usedBy: cleanEmail,
+          authorUid: user.uid,
         }),
         8000,
-        'Tiempo de espera agotado al actualizar el Código Maestro en Firebase.'
+        'Tiempo de espera al actualizar el código maestro.'
       );
 
-      // Step F: Success state & celebration
-      setRegisteredAuthor(authorPayload);
-      setStep('success');
+      // Step F: Actualizar estado y redirigir al panel de gestión centralizado
+      setAuthorProfile(authorPayload);
 
       confetti({
-        particleCount: 90,
+        particleCount: 100,
         spread: 80,
         origin: { y: 0.6 },
         colors: ['#38bdf8', '#34d399', '#f97316', '#a855f7', '#06b6d4'],
       });
     } catch (err: any) {
-      console.error('Registration failed:', err);
-      handleFirestoreError(err, OperationType.WRITE, 'authors');
-
-      // Provide clear and helpful error messages for connection, permissions, or data issues
-      let friendlyMessage = 'No se pudo completar el registro en este momento.';
-      if (err?.code === 'permission-denied' || err?.message?.toLowerCase().includes('permission')) {
-        friendlyMessage =
-          'Error de permisos en Firebase Firestore: No se tienen privilegios para escribir en authors o actualizar master_codes. Verifica las reglas de seguridad.';
-      } else if (
-        err?.code === 'unavailable' ||
-        err?.message?.toLowerCase().includes('network') ||
-        err?.message?.toLowerCase().includes('conexion') ||
-        err?.message?.toLowerCase().includes('conexión')
-      ) {
-        friendlyMessage =
-          'Error de conexión con Firebase: No se pudo conectar a los servidores de Firestore. Verifica tu conexión a internet e inténtalo de nuevo.';
-      } else if (err?.message) {
-        friendlyMessage = err.message;
+      console.warn('Activation notice:', err?.code || err?.message || err);
+      let message = err?.message || 'Error al completar la activación.';
+      if (err?.code) {
+        message = getAuthErrorMessage(err.code);
+      } else if (err?.message?.toLowerCase().includes('api-key')) {
+        message = 'La API Key de Firebase no es válida. Revisa las variables de entorno (VITE_FIREBASE_API_KEY).';
       }
-
-      setSubmitError(friendlyMessage);
+      setActivationError(message);
     } finally {
-      // Crucial: always remove the loading state so the button never stays frozen
-      setIsSubmitting(false);
+      setIsActivating(false);
     }
   };
 
-  // Helper to seed 3 demo master codes directly into Firestore for 1-click testing
+  // =========================================================================
+  // 2. LÓGICA DE INICIAR SESIÓN (TAB 2 - VISITAS RECURRENTES)
+  // =========================================================================
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const cleanEmail = loginEmail.trim().toLowerCase();
+    const password = loginPassword;
+
+    if (!cleanEmail || !/^\S+@\S+\.\S+$/.test(cleanEmail)) {
+      setLoginError('Por favor ingresa un correo electrónico válido.');
+      return;
+    }
+    if (!password) {
+      setLoginError('Por favor ingresa tu contraseña.');
+      return;
+    }
+
+    if (!firebaseConfig.apiKey) {
+      setLoginError('No se encontró la clave de Firebase (VITE_FIREBASE_API_KEY). Configura las variables de entorno en .env o en el panel de despliegue.');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError(null);
+
+    try {
+      // Iniciar sesión directamente con Firebase Authentication
+      const userCredential = await withTimeout(
+        signInWithEmailAndPassword(auth, cleanEmail, password),
+        10000,
+        'Tiempo de espera agotado al conectar con el servidor de autenticación.'
+      );
+
+      // Cargar perfil del autor y redirigir al panel centralizado
+      await fetchAuthorProfile(userCredential.user);
+
+      confetti({
+        particleCount: 50,
+        spread: 60,
+        origin: { y: 0.7 },
+        colors: ['#38bdf8', '#34d399', '#06b6d4'],
+      });
+    } catch (err: any) {
+      console.warn('Login notice:', err?.code || err?.message || err);
+      let message = err?.message || 'Error al iniciar sesión.';
+      if (err?.code) {
+        message = getAuthErrorMessage(err.code);
+      } else if (err?.message?.toLowerCase().includes('api-key')) {
+        message = 'La API Key de Firebase no es válida. Revisa las variables de entorno (VITE_FIREBASE_API_KEY).';
+      }
+      setLoginError(message);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // Cerrar Sesión
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setFirebaseUser(null);
+      setAuthorProfile(null);
+      setActiveTab('login');
+      setLoginPassword('');
+    } catch (err) {
+      console.error('Sign out error:', err);
+    }
+  };
+
+  // Sembrar códigos demo para pruebas con 1 clic
   const seedDemoCodes = async () => {
     setIsSeeding(true);
     try {
@@ -508,41 +602,28 @@ export default function App() {
   };
 
   const copyAndFillCode = (code: string) => {
-    setInputCode(code);
-    setValidationError(null);
+    setActivationCode(code);
+    setActiveTab('activate');
+    setActivationError(null);
     setCopiedCodeNotice(code);
-    setTimeout(() => setCopiedCodeNotice(null), 2500);
-  };
-
-  const resetFlow = () => {
-    setStep('code');
-    setInputCode('');
-    setValidatedCode(null);
-    setAuthorName('');
-    setAuthorEmail('');
-    setSubdomainSlug('');
-    setIsCustomSlug(false);
-    setSlugAvailable(null);
-    setSlugFormatError(null);
-    setRegisteredAuthor(null);
-    setValidationError(null);
-    setSubmitError(null);
+    validateCodeByField(code);
+    setTimeout(() => setCopiedCodeNotice(null), 3000);
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between selection:bg-cyan-500/30 selection:text-cyan-200 relative overflow-hidden font-sans">
-      {/* Background ambient mesh with Buenos Malos Consejos 4-color brand glow */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[680px] pointer-events-none opacity-45">
-        <div className="absolute top-[-80px] left-1/6 w-96 h-96 bg-sky-500/20 rounded-full blur-[110px]" />
-        <div className="absolute top-[-40px] right-1/6 w-96 h-96 bg-purple-600/18 rounded-full blur-[110px]" />
+      {/* Background ambient mesh with Buenos Malos Consejos glow */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[720px] pointer-events-none opacity-40">
+        <div className="absolute top-[-80px] left-1/6 w-96 h-96 bg-sky-500/20 rounded-full blur-[120px]" />
+        <div className="absolute top-[-40px] right-1/6 w-96 h-96 bg-purple-600/18 rounded-full blur-[120px]" />
         <div className="absolute top-48 left-1/3 w-80 h-80 bg-orange-500/12 rounded-full blur-[100px]" />
         <div className="absolute top-48 right-1/4 w-80 h-80 bg-emerald-500/15 rounded-full blur-[100px]" />
       </div>
 
-      {/* Floating Pill Navigation Bar (Estilo limpio de Buenos Malos Consejos) */}
+      {/* Floating Header */}
       <header className="sticky top-3 sm:top-5 z-40 px-3 sm:px-6">
         <nav className="max-w-4xl mx-auto rounded-full bg-slate-900/85 backdrop-blur-xl border border-white/10 shadow-2xl shadow-cyan-950/40 p-2 sm:p-2.5 flex items-center justify-between gap-2">
-          {/* Brand Pill (Left) */}
+          {/* Brand Pill */}
           <div className="flex items-center space-x-2.5 pl-2 pr-2 py-1">
             <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-gradient-to-tr from-sky-400 via-cyan-400 to-emerald-400 flex items-center justify-center shadow-md shadow-cyan-500/25 border border-cyan-200/50 shrink-0">
               <BookOpen className="w-4 h-4 text-slate-950 font-extrabold" />
@@ -553,77 +634,82 @@ export default function App() {
                   Buenos Malos Consejos
                 </span>
                 <span className="hidden sm:inline-block text-[9px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-full bg-gradient-to-r from-sky-500/20 to-emerald-500/20 text-cyan-300 border border-cyan-400/30">
-                  Creators
+                  Editorial Central
                 </span>
               </div>
               <span className="text-[10px] text-slate-400 -mt-0.5 hidden xs:inline">
-                Portal Oficial de Autores
+                Plataforma Editorial Centralizada
               </span>
             </div>
           </div>
 
-          {/* Navigation Pills (Center - Desktop) */}
-          <div className="hidden md:flex items-center gap-1 bg-slate-950/70 p-1 rounded-full border border-slate-800/80">
+          {/* Navigation link */}
+          <div className="hidden md:flex items-center gap-1 bg-slate-950/70 p-1 rounded-full border border-slate-800/80 text-xs">
             <a
               href="https://buenosmalosconsejos.com"
               target="_blank"
               rel="noreferrer"
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800/70 transition"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-slate-300 hover:text-white hover:bg-slate-800/70 transition"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
-              <span>Web Principal</span>
+              <Compass className="w-3.5 h-3.5 text-cyan-400" />
+              <span>buenosmalosconsejos.com</span>
             </a>
-
-            <div className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-semibold text-cyan-200 bg-gradient-to-r from-sky-500/20 via-cyan-500/20 to-emerald-500/20 border border-cyan-400/40 shadow-sm shadow-cyan-500/20">
+            <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-cyan-200 bg-cyan-950/50 border border-cyan-400/30 font-semibold">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Registro de Autores</span>
-            </div>
-
-            <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition">
-              <span className="w-1.5 h-1.5 rounded-full bg-orange-400" />
-              <span>Membresías</span>
+              <span>{firebaseUser ? 'Panel Centralizado' : 'Acceso de Autores'}</span>
             </div>
           </div>
 
-          {/* Action Pills (Right) */}
-          <div className="flex items-center gap-1.5 sm:gap-2 pr-1">
-            <button
-              onClick={() => setShowSandbox(!showSandbox)}
-              className="text-xs flex items-center space-x-1.5 px-3 sm:px-3.5 py-1.5 rounded-full bg-slate-950/90 hover:bg-slate-800 text-cyan-300 hover:text-cyan-200 border border-cyan-500/35 transition shadow-sm hover:shadow-cyan-500/15"
-              title="Panel de verificación rápida y códigos de prueba"
-            >
-              <Database className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="font-semibold hidden xs:inline">Códigos Demo</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-500/30">
-                {liveCodes.filter((c) => !c.used).length}
-              </span>
-              {showSandbox ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
+          {/* Right Action: Demo Sandbox / Logout */}
+          <div className="flex items-center gap-2 pr-1">
+            {firebaseUser ? (
+              <button
+                onClick={handleSignOut}
+                className="text-xs flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full bg-rose-950/60 hover:bg-rose-900/70 text-rose-300 border border-rose-700/50 transition shadow-sm"
+                title="Cerrar sesión actual"
+              >
+                <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                <span className="font-semibold hidden xs:inline">Cerrar Sesión</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowSandbox(!showSandbox)}
+                className="text-xs flex items-center space-x-1.5 px-3 sm:px-3.5 py-1.5 rounded-full bg-slate-950/90 hover:bg-slate-800 text-cyan-300 hover:text-cyan-200 border border-cyan-500/35 transition shadow-sm"
+                title="Códigos de prueba para Firestore"
+              >
+                <Database className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="font-semibold hidden xs:inline">Códigos Demo</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-500/30">
+                  {liveCodes.filter((c) => !c.used).length}
+                </span>
+                {showSandbox ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            )}
           </div>
         </nav>
       </header>
 
-      {/* Testing Sandbox collapsible drawer */}
-      {showSandbox && (
-        <div className="max-w-4xl mx-auto w-full px-4 mt-3 z-30">
+      {/* Demo Codes Drawer */}
+      {showSandbox && !firebaseUser && (
+        <div className="max-w-4xl mx-auto w-full px-4 mt-3 z-30 animate-fade-in">
           <div className="bg-slate-900/95 border border-cyan-500/35 rounded-3xl p-5 shadow-2xl backdrop-blur-xl">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
               <div>
                 <h4 className="text-sm font-semibold text-cyan-300 flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-cyan-400" />
-                  Consola de Verificación Rápida (Firebase Firestore)
+                  Códigos de Activación Disponibles en Firestore
                 </h4>
                 <p className="text-xs text-slate-400">
-                  Haz clic en cualquier código disponible para pegarlo automáticamente en el validador.
+                  Haz clic en un código disponible para cargarlo automáticamente en la pestaña de activación.
                 </p>
               </div>
               <button
                 onClick={seedDemoCodes}
                 disabled={isSeeding}
-                className="self-start sm:self-auto text-xs font-semibold px-4 py-2 rounded-full bg-gradient-to-r from-cyan-500/20 via-emerald-500/20 to-orange-500/20 hover:from-cyan-500/30 hover:to-emerald-500/30 text-cyan-200 border border-cyan-400/40 transition flex items-center gap-1.5 disabled:opacity-50"
+                className="self-start sm:self-auto text-xs font-semibold px-4 py-2 rounded-full bg-cyan-950/80 hover:bg-cyan-900/60 text-cyan-200 border border-cyan-400/40 transition flex items-center gap-1.5 disabled:opacity-50"
               >
                 {isSeeding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5 text-cyan-400" />}
-                Sembrar Códigos en Firestore
+                Sembrar Nuevos Códigos
               </button>
             </div>
 
@@ -631,7 +717,7 @@ export default function App() {
               <div className="mb-3 text-xs text-cyan-300 bg-cyan-950/70 border border-cyan-500/40 px-3.5 py-2 rounded-xl flex items-center gap-2">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                 <span>
-                  Código <strong className="text-white font-mono">{copiedCodeNotice}</strong> copiado al campo de validación.
+                  Código <strong className="text-white font-mono">{copiedCodeNotice}</strong> cargado en el formulario de activación.
                 </span>
               </div>
             )}
@@ -639,9 +725,9 @@ export default function App() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               {liveCodes.length === 0 ? (
                 <div className="sm:col-span-3 text-center py-5 bg-slate-950/60 rounded-2xl border border-dashed border-slate-800 text-xs text-slate-400">
-                  No hay códigos registrados aún en Firestore.{' '}
+                  No hay códigos registrados aún.{' '}
                   <button onClick={seedDemoCodes} className="text-cyan-400 hover:text-cyan-300 underline font-semibold ml-1">
-                    Haz clic aquí para sembrar 3 códigos de prueba
+                    Sembrar 3 códigos de prueba
                   </button>
                 </div>
               ) : (
@@ -660,7 +746,7 @@ export default function App() {
                         <span className="font-mono text-xs font-semibold text-white tracking-wide">{item.code}</span>
                         {item.used ? (
                           <span className="text-[10px] px-2 py-0.2 rounded-full bg-rose-950/80 text-rose-300 border border-rose-800/50">
-                            Usado
+                            Canjeado
                           </span>
                         ) : (
                           <span className="text-[10px] px-2 py-0.2 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40">
@@ -669,7 +755,7 @@ export default function App() {
                         )}
                       </div>
                       <div className="text-[11px] text-slate-400 truncate mt-0.5">
-                        {item.used ? `Canjeado: ${item.usedBy || 'Autor'}` : item.plan}
+                        {item.used ? `Por: ${item.usedBy || 'Autor'}` : item.plan}
                       </div>
                     </div>
                     {!item.used && (
@@ -683,83 +769,186 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content Container */}
-      <main className="max-w-3xl w-full mx-auto px-4 py-8 md:py-12 flex-1 flex flex-col justify-center">
-        {/* Progress indicator steps styled with floating pill badges */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between max-w-md mx-auto bg-slate-900/60 p-2 sm:p-2.5 rounded-full border border-white/5 backdrop-blur-md">
-            {/* Step 1 badge */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs border transition ${
-                  step === 'code'
-                    ? 'bg-gradient-to-r from-sky-400 to-cyan-400 text-slate-950 border-cyan-200 shadow-md shadow-cyan-500/30'
-                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40'
-                }`}
-              >
-                {step === 'code' ? '1' : <CheckCircle2 className="w-3.5 h-3.5" />}
+      {/* Main Container */}
+      <main className="max-w-4xl w-full mx-auto px-4 py-8 md:py-12 flex-1 flex flex-col justify-center">
+        {authLoading ? (
+          <div className="text-center py-16 flex flex-col items-center justify-center gap-3">
+            <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+            <p className="text-sm text-slate-400">Verificando sesión editorial...</p>
+          </div>
+        ) : firebaseUser && authorProfile ? (
+          /* ========================================================================= */
+          /* PANEL DE GESTIÓN CENTRALIZADO (USUARIO AUTENTICADO) */
+          /* ========================================================================= */
+          <div className="space-y-6 animate-fade-in">
+            {/* Top Welcome Card */}
+            <div className="bg-slate-900/80 border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-cyan-500/15 via-emerald-500/10 to-purple-500/10 rounded-full blur-3xl pointer-events-none" />
+
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-6 border-b border-slate-800">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-sky-400 via-cyan-400 to-emerald-400 flex items-center justify-center text-slate-950 shadow-xl shadow-cyan-500/30 border border-cyan-200/50 font-extrabold text-2xl shrink-0">
+                    {authorProfile.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                        Autor Registrado
+                      </span>
+                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 font-semibold">
+                        Rol: {authorProfile.role || 'author'}
+                      </span>
+                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-500/40 font-semibold flex items-center gap-1">
+                        <Crown className="w-3 h-3 text-purple-400" />
+                        {authorProfile.plan || 'Membresía Anual'}
+                      </span>
+                    </div>
+                    <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                      Panel Editorial Centralizado
+                    </h1>
+                    <p className="text-sm text-cyan-200 font-medium mt-0.5">
+                      {authorProfile.name} • <span className="text-slate-400 font-mono text-xs">{authorProfile.email}</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleSignOut}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-slate-950 hover:bg-slate-800 border border-slate-700 hover:border-rose-500/50 text-slate-300 hover:text-rose-200 text-xs font-semibold flex items-center justify-center gap-2 transition"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Cerrar Sesión</span>
+                  </button>
+                </div>
               </div>
-              <span className={`text-xs font-semibold ${step === 'code' ? 'text-cyan-200' : 'text-slate-400'}`}>
-                Código Maestro
-              </span>
-            </div>
 
-            {/* Line connector */}
-            <div
-              className={`h-[2px] w-8 sm:w-14 transition-colors ${
-                step !== 'code' ? 'bg-gradient-to-r from-cyan-400 to-emerald-400' : 'bg-slate-800'
-              }`}
-            />
+              {/* Main action cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+                {/* Plataforma Editorial Centralizada */}
+                <div className="p-5 rounded-2xl bg-slate-950/80 border border-cyan-500/30 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs uppercase font-bold tracking-wider text-slate-400 flex items-center gap-1.5">
+                        <Globe className="w-4 h-4 text-cyan-400" />
+                        Plataforma Editorial Centralizada
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-500/30 font-semibold">
+                        OFICIAL
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mb-3 leading-relaxed">
+                      Tus obras y perfil de autor se publican directamente en el catálogo editorial central de Buenos Malos Consejos.
+                    </p>
+                    <div className="font-mono text-cyan-300 text-sm font-semibold p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      https://buenosmalosconsejos.com
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-900">
+                    <a
+                      href="https://buenosmalosconsejos.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full text-xs py-2.5 px-4 rounded-full bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 text-slate-950 font-bold flex items-center justify-center gap-1.5 transition hover:opacity-90"
+                    >
+                      <span>Ir al Portal Central</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                </div>
 
-            {/* Step 2 badge */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs border transition ${
-                  step === 'details'
-                    ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 border-emerald-200 shadow-md shadow-emerald-500/30'
-                    : step === 'success'
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40'
-                    : 'bg-slate-900 text-slate-500 border-slate-800'
-                }`}
-              >
-                {step === 'success' ? <CheckCircle2 className="w-3.5 h-3.5" /> : '2'}
+                {/* Google Drive Subcarpeta Asignada */}
+                <div className="p-5 rounded-2xl bg-slate-950/80 border border-emerald-500/30 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs uppercase font-bold tracking-wider text-slate-400 flex items-center gap-1.5">
+                        <HardDrive className="w-4 h-4 text-emerald-400" />
+                        Espacio de Manuscritos en la Nube
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/30 font-semibold">
+                        GOOGLE DRIVE
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-xs space-y-1">
+                      <div className="flex items-center justify-between text-slate-400">
+                        <span>Carpeta Privada:</span>
+                        <span className="text-white font-semibold truncate ml-2">
+                          {authorProfile.driveFolderName || `${authorProfile.name} - Manuscritos`}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-400 font-mono text-[11px]">
+                        <span>Código Maestro:</span>
+                        <span className="text-cyan-300">{authorProfile.masterCode}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-900">
+                    {authorProfile.driveFolderUrl && (
+                      <a
+                        href={authorProfile.driveFolderUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full text-xs py-2.5 px-4 rounded-full bg-emerald-950 hover:bg-emerald-900 text-emerald-200 border border-emerald-500/40 font-bold flex items-center justify-center gap-1.5 transition"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Abrir Mi Carpeta de Manuscritos</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                  </div>
+                </div>
               </div>
-              <span className={`text-xs font-semibold ${step === 'details' ? 'text-emerald-300' : 'text-slate-400'}`}>
-                Datos del Autor
-              </span>
-            </div>
 
-            {/* Line connector */}
-            <div
-              className={`h-[2px] w-8 sm:w-14 transition-colors ${
-                step === 'success' ? 'bg-gradient-to-r from-emerald-400 to-cyan-400' : 'bg-slate-800'
-              }`}
-            />
+              {/* Centralized Editorial Pipeline */}
+              <div className="mt-6 p-5 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-3">
+                <h4 className="text-xs uppercase font-bold tracking-wider text-slate-300 flex items-center gap-2">
+                  <Library className="w-4 h-4 text-cyan-400" />
+                  Flujo de Gestión Editorial Centralizado
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="flex items-center gap-2 text-emerald-400 font-semibold mb-1">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>1. Cuenta & Membresía</span>
+                    </div>
+                    <p className="text-slate-400 text-[11px] leading-relaxed">
+                      Perfil editorial activo con rol de autor registrado y credenciales protegidas en Firebase Auth.
+                    </p>
+                  </div>
 
-            {/* Step 3 badge */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs border transition ${
-                  step === 'success'
-                    ? 'bg-gradient-to-r from-cyan-400 to-emerald-400 text-slate-950 border-cyan-200 shadow-md shadow-cyan-500/30'
-                    : 'bg-slate-900 text-slate-500 border-slate-800'
-                }`}
-              >
-                <FolderCheck className="w-3.5 h-3.5" />
+                  <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="flex items-center gap-2 text-cyan-400 font-semibold mb-1">
+                      <UploadCloud className="w-4 h-4" />
+                      <span>2. Depósito de Manuscritos</span>
+                    </div>
+                    <p className="text-slate-400 text-[11px] leading-relaxed">
+                      Sube tus obras en formato .docx o .pdf a tu carpeta asignada en Google Drive para revisión.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="flex items-center gap-2 text-purple-400 font-semibold mb-1">
+                      <Bookmark className="w-4 h-4" />
+                      <span>3. Edición & Catálogo</span>
+                    </div>
+                    <p className="text-slate-400 text-[11px] leading-relaxed">
+                      Corrección de estilo, diagramación y publicación en la plataforma central de Buenos Malos Consejos.
+                    </p>
+                  </div>
+                </div>
               </div>
-              <span className={`text-xs font-semibold ${step === 'success' ? 'text-cyan-300' : 'text-slate-400'}`}>
-                Confirmación
-              </span>
             </div>
           </div>
-        </div>
+        ) : (
+          /* ========================================================================= */
+          /* FORMULARIO DE ACCESO DUAL (SIN SUBDOMINIOS): ACTIVACIÓN vs INICIAR SESIÓN */
+          /* ========================================================================= */
+          <div className="bg-slate-900/80 border border-white/10 rounded-3xl p-6 sm:p-9 shadow-2xl backdrop-blur-2xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-72 h-72 bg-gradient-to-br from-sky-500/10 via-purple-500/10 to-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
-        {/* STEP 1: Ingrese su Código Maestro */}
-        {step === 'code' && (
-          <div className="bg-slate-900/80 border border-white/10 rounded-3xl p-7 sm:p-9 shadow-2xl backdrop-blur-2xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-60 h-60 bg-gradient-to-br from-sky-500/10 via-purple-500/10 to-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-
-            <div className="mb-6">
+            {/* Header intro */}
+            <div className="mb-6 text-center sm:text-left">
               <div className="inline-flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-slate-950/80 border border-white/10 text-xs font-semibold mb-4 shadow-sm">
                 <div className="flex items-center -space-x-1">
                   <span className="w-2.5 h-2.5 rounded-full bg-sky-400 border border-slate-950" />
@@ -769,448 +958,388 @@ export default function App() {
                 </div>
                 <span className="text-white font-bold">Buenos Malos Consejos</span>
                 <span className="text-slate-600">•</span>
-                <span className="text-cyan-300">Portal de Autores</span>
+                <span className="text-cyan-300">Plataforma Editorial Centralizada</span>
               </div>
 
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-                Bienvenido al Círculo Editorial
+                {activeTab === 'activate' ? 'Activación de Cuenta de Autor' : 'Iniciar Sesión en el Panel Editorial'}
               </h1>
               <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-                Ingresa el Código Maestro único que te otorgó el equipo tras confirmar tu membresía anual. Este
-                código activará tu portal editorial con tu subdominio personalizado.
+                {activeTab === 'activate'
+                  ? 'Si eres un autor nuevo, ingresa tu Código de Activación / Maestro y configura tu cuenta para acceder al panel de gestión centralizado.'
+                  : 'Si ya activaste tu cuenta previamente, inicia sesión con tu correo y contraseña para acceder de inmediato a tu panel.'}
               </p>
             </div>
 
-            <form onSubmit={handleValidateCode} className="space-y-5">
-              <div>
-                <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-2">
-                  Código Maestro del Autor
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                    <KeyRound className="w-5 h-5 text-cyan-400" />
-                  </div>
-                  <input
-                    type="text"
-                    value={inputCode}
-                    onChange={handleCodeChange}
-                    placeholder="EJ: BMC-2026-VIP-CREATOR"
-                    autoFocus
-                    className="w-full pl-12 pr-4 py-3.5 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white font-mono text-base tracking-wider placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition shadow-inner"
-                  />
+            {firebaseStatus.hasKeyError && (
+              <div className="mb-6 p-4 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs leading-relaxed flex items-start gap-3 animate-fade-in">
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-amber-300">
+                    Aviso de configuración en VITE_FIREBASE_API_KEY:
+                  </p>
+                  <p className="mt-1 text-slate-300">
+                    {firebaseStatus.detectedErrorDetail}
+                  </p>
+                  <p className="mt-1.5 text-amber-400/90 font-mono text-[11px] bg-slate-950/60 p-2 rounded-lg border border-amber-500/20">
+                    Sustituye el valor con la Web API Key pura (ASCII sin tildes) en Firebase Console &gt; Project Settings &gt; General.
+                  </p>
                 </div>
-                <p className="text-xs text-slate-500 mt-2 flex items-center gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
-                  El código se validará en tiempo real contra nuestra base de datos editorial.
-                </p>
               </div>
+            )}
 
-              {/* Error Alert */}
-              {validationError && (
-                <div className="p-4 rounded-2xl bg-rose-950/50 border border-rose-800/60 text-rose-200 text-xs flex items-start gap-3 animate-fade-in">
-                  <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-semibold">Validación fallida:</span> {validationError}
-                  </div>
-                </div>
-              )}
-
-              {/* Submit Button (Estilo píldora) */}
-              <button
-                type="submit"
-                disabled={validating || !inputCode.trim()}
-                className="w-full py-4 px-8 rounded-full font-extrabold text-sm bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 hover:from-sky-300 hover:via-cyan-300 hover:to-emerald-300 text-slate-950 shadow-xl shadow-cyan-500/25 border border-cyan-100/60 flex items-center justify-center gap-2 transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none"
-              >
-                {validating ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                    <span>Verificando código...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Validar Código Maestro</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
-            </form>
-
-            {/* Quick helper tip */}
-            <div className="mt-6 pt-5 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between text-xs text-slate-400 gap-2">
-              <span>¿No tienes un código aún o necesitas asistencia?</span>
+            {/* Selector de Pestañas (Tabs) Estilo Píldora */}
+            <div className="mb-7 p-1.5 rounded-2xl bg-slate-950/90 border border-slate-800 flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => {
-                  setShowSandbox(true);
-                  seedDemoCodes();
+                  setActiveTab('activate');
+                  setActivationError(null);
+                  setLoginError(null);
                 }}
-                className="text-cyan-400 hover:text-cyan-300 font-semibold underline underline-offset-2 flex items-center gap-1"
+                className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                  activeTab === 'activate'
+                    ? 'bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 text-slate-950 shadow-lg shadow-cyan-500/25 border border-cyan-100/40'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                }`}
               >
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                Obtener código de prueba instantáneo
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 2: Formulario Limpio de Datos del Autor y Subdominio (Sin advertencias ni botones de Drive) */}
-        {step === 'details' && validatedCode && (
-          <div className="bg-slate-900/80 border border-white/10 rounded-3xl p-7 sm:p-9 shadow-2xl backdrop-blur-2xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-60 h-60 bg-gradient-to-br from-emerald-500/10 via-cyan-500/10 to-sky-500/10 rounded-full blur-3xl pointer-events-none" />
-
-            {/* Code validated banner */}
-            <div className="mb-6 p-3 sm:p-4 rounded-2xl bg-slate-950/80 border border-cyan-500/40 text-cyan-200 text-xs flex items-center justify-between shadow-sm">
-              <div className="flex items-center gap-2.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <div>
-                  <span className="font-semibold text-white">Código Maestro Válido:</span>{' '}
-                  <span className="font-mono bg-cyan-950/90 px-2.5 py-0.5 rounded-full text-cyan-300 border border-cyan-400/40">
-                    {validatedCode.code}
-                  </span>{' '}
-                  <span className="text-emerald-300 font-medium">({validatedCode.plan})</span>
-                </div>
-              </div>
-              <button
-                onClick={() => setStep('code')}
-                className="text-slate-400 hover:text-cyan-300 underline text-[11px] transition"
-              >
-                Cambiar
-              </button>
-            </div>
-
-            <div className="mb-6">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/80 border border-emerald-500/30 text-xs font-semibold mb-3">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-emerald-300 font-semibold">Paso 2 // Datos del Autor</span>
-              </div>
-              <h2 className="text-2xl font-extrabold text-white tracking-tight">Completa tu Registro de Autor</h2>
-              <p className="text-sm text-slate-400 mt-1">
-                Ingresa tus datos y el subdominio dinámico que llevará tu portal público en Buenos Malos Consejos.
-              </p>
-            </div>
-
-            <form onSubmit={handleRegisterAuthor} className="space-y-5">
-              {/* Nombre del autor */}
-              <div>
-                <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-2">
-                  Nombre Completo / Seudónimo Editorial
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                    <User className="w-4 h-4 text-cyan-400" />
-                  </div>
-                  <input
-                    type="text"
-                    required
-                    value={authorName}
-                    onChange={handleNameChange}
-                    placeholder="Ej: Gabriel García Márquez"
-                    className="w-full pl-12 pr-4 py-3.5 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition text-sm shadow-inner"
-                  />
-                </div>
-              </div>
-
-              {/* Correo electrónico */}
-              <div>
-                <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-2">
-                  Correo Electrónico
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                    <Mail className="w-4 h-4 text-cyan-400" />
-                  </div>
-                  <input
-                    type="email"
-                    required
-                    value={authorEmail}
-                    onChange={(e) => setAuthorEmail(e.target.value)}
-                    placeholder="autor@editorial.com"
-                    className="w-full pl-12 pr-4 py-3.5 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition text-sm shadow-inner"
-                  />
-                </div>
-                <p className="text-[11px] text-slate-500 mt-1.5">
-                  Aquí recibirás las notificaciones de ventas, regalías y confirmaciones editoriales.
-                </p>
-              </div>
-
-              {/* Subdominio deseado */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs uppercase font-bold tracking-wider text-slate-300">
-                    Subdominio Dinámico (Netlify)
-                  </label>
-                  {slugChecking ? (
-                    <span className="text-[11px] text-cyan-400 flex items-center gap-1 font-medium">
-                      <Loader2 className="w-3 h-3 animate-spin text-cyan-400" /> Verificando disponibilidad...
-                    </span>
-                  ) : slugFormatError ? (
-                    <span className="text-[11px] text-amber-300 flex items-center gap-1 font-medium">
-                      ⚠️ {slugFormatError}
-                    </span>
-                  ) : slugAvailable === true ? (
-                    <span className="text-[11px] text-emerald-400 flex items-center gap-1 font-semibold">
-                      <CheckCircle2 className="w-3 h-3" /> Subdominio disponible
-                    </span>
-                  ) : slugAvailable === false ? (
-                    <span className="text-[11px] text-rose-400 flex items-center gap-1 font-semibold">
-                      <XCircle className="w-3 h-3" /> Ya está registrado
-                    </span>
-                  ) : null}
-                </div>
-
-                <div className="flex items-center rounded-2xl bg-slate-950/90 border border-slate-700/80 focus-within:border-cyan-400 focus-within:ring-2 focus-within:ring-cyan-400/50 overflow-hidden text-sm shadow-inner transition">
-                  <div className="pl-4 pr-2 py-3.5 text-slate-500 flex items-center gap-1.5 select-none shrink-0">
-                    <Globe className="w-4 h-4 text-cyan-400" />
-                    <span className="text-slate-400 font-mono text-xs">https://</span>
-                  </div>
-                  <input
-                    type="text"
-                    required
-                    value={subdomainSlug}
-                    onChange={handleSlugChange}
-                    placeholder="su-subdominio"
-                    className="flex-1 py-3.5 bg-transparent text-white font-mono text-sm placeholder:text-slate-600 focus:outline-none min-w-[120px]"
-                  />
-                  <div className="pr-4 pl-3 py-3.5 text-emerald-400 font-mono text-xs font-semibold select-none bg-slate-900/90 border-l border-slate-800 shrink-0">
-                    .buenosmalosconsejos.com
-                  </div>
-                </div>
-
-                {/* Netlify Format Requirements Helper */}
-                <div className="mt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-400">
-                  <span className="flex items-center gap-1 text-slate-300">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    Solo minúsculas (a-z), números (0-9) y guiones simples (-)
-                  </span>
-                  <span className="text-cyan-400/80 font-mono">Netlify DNS (3-63 car.)</span>
-                </div>
-
-                {/* Live Preview Box */}
-                <div className="mt-3 p-3.5 rounded-2xl bg-slate-950/80 border border-cyan-500/30 flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1.5 shadow-sm">
-                  <span className="text-slate-400">URL pública de tu portal de autor:</span>
-                  <span className="font-mono text-cyan-300 font-semibold truncate bg-cyan-950/50 px-3 py-1 rounded-full border border-cyan-500/30">
-                    https://{subdomainSlug || 'su-subdominio'}.buenosmalosconsejos.com
-                  </span>
-                </div>
-              </div>
-
-              {/* Robust Visual Alert for Firebase / Connection Errors */}
-              {submitError && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-rose-950/85 border-2 border-rose-500/70 text-rose-100 shadow-xl shadow-rose-950/50 flex flex-col sm:flex-row items-start justify-between gap-3 animate-fade-in">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-400/30 shrink-0 mt-0.5">
-                      <AlertTriangle className="w-5 h-5 text-rose-400" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-sm font-bold text-white">Error al Registrar Autor</h4>
-                        <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-rose-900/60 border border-rose-700/60 text-rose-300">
-                          Firebase
-                        </span>
-                      </div>
-                      <p className="text-xs text-rose-200 mt-1.5 leading-relaxed">{submitError}</p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSubmitError(null)}
-                    className="text-xs font-semibold px-3 py-1.5 rounded-full bg-rose-900/70 hover:bg-rose-800 text-rose-200 border border-rose-600/50 transition shrink-0 self-end sm:self-center"
-                  >
-                    Descartar Alerta
-                  </button>
-                </div>
-              )}
-
-              {/* Actions with rounded-full pill buttons */}
-              <div className="flex items-center gap-3 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setStep('code')}
-                  disabled={isSubmitting}
-                  className="px-6 py-4 rounded-full border border-slate-700 bg-slate-800/60 hover:bg-slate-700/60 hover:border-cyan-500/40 text-slate-300 hover:text-white text-sm font-semibold transition"
+                <Sparkles className="w-4 h-4" />
+                <span>Activación por Primera Vez</span>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold hidden sm:inline ${
+                    activeTab === 'activate' ? 'bg-slate-950/20 text-slate-950' : 'bg-slate-800 text-cyan-300'
+                  }`}
                 >
-                  Regresar
-                </button>
+                  Nuevo
+                </span>
+              </button>
 
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('login');
+                  setActivationError(null);
+                  setLoginError(null);
+                }}
+                className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                  activeTab === 'login'
+                    ? 'bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 text-slate-950 shadow-lg shadow-cyan-500/25 border border-cyan-100/40'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                }`}
+              >
+                <LogIn className="w-4 h-4" />
+                <span>Iniciar Sesión</span>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold hidden sm:inline ${
+                    activeTab === 'login' ? 'bg-slate-950/20 text-slate-950' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  Recurrente
+                </span>
+              </button>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* PESTAÑA 1: ACTIVACIÓN POR PRIMERA VEZ (POR DEFECTO - SIN SUBDOMINIOS) */}
+            {/* ========================================================================= */}
+            {activeTab === 'activate' && (
+              <form onSubmit={handleActivation} className="space-y-4 animate-fade-in">
+                {/* 1. Código de Activación / Maestro */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs uppercase font-bold tracking-wider text-slate-300">
+                      Código de Activación / Maestro <span className="text-cyan-400">*</span>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      {codeValidating && (
+                        <span className="text-[11px] text-cyan-400 flex items-center gap-1 font-medium">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Buscando campo &quot;code&quot;...
+                        </span>
+                      )}
+                      {codeValidationStatus && !codeValidating && (
+                        <span
+                          className={`text-[11px] flex items-center gap-1 font-semibold ${
+                            codeValidationStatus.valid ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          {codeValidationStatus.valid ? (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                          )}
+                          <span>{codeValidationStatus.message}</span>
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSandbox(true);
+                          seedDemoCodes();
+                        }}
+                        className="text-[11px] text-cyan-400 hover:text-cyan-300 underline font-semibold flex items-center gap-1 ml-1"
+                      >
+                        <Database className="w-3 h-3" /> Ver códigos demo
+                      </button>
+                    </div>
+                  </div>
+                  <div className="relative flex items-center">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                      <KeyRound className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      value={activationCode}
+                      onChange={handleCodeChange}
+                      onBlur={() => activationCode.trim() && validateCodeByField(activationCode)}
+                      placeholder="EJ: BMC-2026-VIP-CREATOR"
+                      className="w-full pl-11 pr-24 py-3 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white font-mono text-sm tracking-wider placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => validateCodeByField(activationCode)}
+                      disabled={!activationCode.trim() || codeValidating}
+                      className="absolute right-2 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-cyan-200 border border-slate-700 text-xs font-semibold transition disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      {codeValidating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Verificar'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Búsqueda por consulta de campo: <span className="font-mono text-slate-400">where(&quot;code&quot;, &quot;==&quot;, valor)</span> en <span className="font-mono text-slate-400">master_codes</span>.
+                  </p>
+                </div>
+
+                {/* 2. Nombre del Autor o Seudónimo */}
+                <div>
+                  <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-1.5">
+                    Nombre del Autor o Seudónimo <span className="text-cyan-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                      <User className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      value={activationName}
+                      onChange={(e) => {
+                        setActivationName(e.target.value);
+                        setActivationError(null);
+                      }}
+                      placeholder="Ej: Gabriel García Márquez"
+                      className="w-full pl-11 pr-4 py-3 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition"
+                    />
+                  </div>
+                </div>
+
+                {/* 3. Correo Electrónico */}
+                <div>
+                  <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-1.5">
+                    Correo Electrónico <span className="text-cyan-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                      <Mail className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <input
+                      type="email"
+                      required
+                      value={activationEmail}
+                      onChange={(e) => {
+                        setActivationEmail(e.target.value);
+                        setActivationError(null);
+                      }}
+                      placeholder="autor@editorial.com"
+                      className="w-full pl-11 pr-4 py-3 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Será tu correo de acceso para iniciar sesión en futuras visitas.
+                  </p>
+                </div>
+
+                {/* 4. Contraseña */}
+                <div>
+                  <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-1.5">
+                    Contraseña <span className="text-cyan-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                      <Lock className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <input
+                      type={showActivationPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      value={activationPassword}
+                      onChange={(e) => {
+                        setActivationPassword(e.target.value);
+                        setActivationError(null);
+                      }}
+                      placeholder="Mínimo 6 caracteres"
+                      className="w-full pl-11 pr-12 py-3 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowActivationPassword(!showActivationPassword)}
+                      className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-white"
+                      title={showActivationPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+                    >
+                      {showActivationPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1">
+                    <span>Mínimo 6 caracteres de seguridad.</span>
+                    {activationPassword.length >= 6 && (
+                      <span className="text-emerald-400 flex items-center gap-1 font-semibold">
+                        <CheckCircle2 className="w-3 h-3" /> Contraseña válida
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Error Banner */}
+                {activationError && (
+                  <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-600/60 text-rose-200 text-xs flex items-start gap-3 animate-fade-in">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <span className="font-bold text-white">Error de activación:</span> {activationError}
+                    </div>
+                  </div>
+                )}
+
+                {/* Submit button */}
                 <button
                   type="submit"
-                  disabled={isSubmitting || slugAvailable === false}
-                  className="flex-1 py-4 px-8 rounded-full font-extrabold text-sm bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 hover:from-sky-300 hover:via-cyan-300 hover:to-emerald-300 text-slate-950 shadow-xl shadow-cyan-500/25 border border-cyan-100/60 flex items-center justify-center gap-2 transition hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
+                  disabled={
+                    isActivating ||
+                    !activationCode.trim() ||
+                    !activationName.trim() ||
+                    !activationEmail.trim() ||
+                    activationPassword.length < 6
+                  }
+                  className="w-full mt-2 py-4 px-8 rounded-full font-extrabold text-sm bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 hover:from-sky-300 hover:via-cyan-300 hover:to-emerald-300 text-slate-950 shadow-xl shadow-cyan-500/25 border border-cyan-100/60 flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none"
                 >
-                  {isSubmitting ? (
+                  {isActivating ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                      <span>Registrando autor...</span>
+                      <span>Verificando código y activando cuenta...</span>
                     </>
                   ) : (
                     <>
-                      <span>Completar Registro de Autor</span>
+                      <span>Activar Cuenta y Acceder al Panel</span>
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}
                 </button>
-              </div>
-            </form>
-          </div>
-        )}
+              </form>
+            )}
 
-        {/* STEP 3: Pantalla de Éxito Limpia con Espacio en la Nube y Panel Personalizado Creados */}
-        {step === 'success' && registeredAuthor && (
-          <div className="bg-slate-900/80 border border-white/10 rounded-3xl p-7 sm:p-9 shadow-2xl backdrop-blur-2xl relative overflow-hidden animate-fade-in">
-            <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-emerald-500/15 via-cyan-500/15 to-purple-500/15 rounded-full blur-3xl pointer-events-none" />
-
-            <div className="text-center mb-8">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-tr from-sky-400 via-cyan-400 to-emerald-400 flex items-center justify-center text-slate-950 shadow-xl shadow-cyan-500/30 border border-cyan-100/60">
-                <CheckCircle2 className="w-9 h-9" />
-              </div>
-              <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-xs font-semibold text-emerald-300">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Espacio Editorial y Panel Personalizado Creados</span>
-              </div>
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mt-3">
-                ¡Bienvenido a Buenos Malos Consejos, {registeredAuthor.name}!
-              </h2>
-              <p className="text-sm text-slate-400 mt-2 max-w-lg mx-auto leading-relaxed">
-                Tu perfil de autor ha sido activado, tu código maestro fue marcado como canjeado y tu espacio
-                editorial seguro en la nube se encuentra listo.
-              </p>
-            </div>
-
-            {/* Author summary card */}
-            <div className="bg-slate-950/80 border border-slate-800/90 rounded-2xl p-5 sm:p-6 mb-6 space-y-4 shadow-sm">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            {/* ========================================================================= */}
+            {/* PESTAÑA 2: INICIAR SESIÓN (PARA VISITAS RECURRENTES) */}
+            {/* ========================================================================= */}
+            {activeTab === 'login' && (
+              <form onSubmit={handleLogin} className="space-y-4 animate-fade-in">
+                {/* Correo Electrónico */}
                 <div>
-                  <span className="text-slate-500 block uppercase font-bold tracking-wider mb-1">Autor</span>
-                  <span className="text-white font-semibold text-sm">{registeredAuthor.name}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block uppercase font-bold tracking-wider mb-1">Correo Electrónico</span>
-                  <span className="text-white font-mono text-sm">{registeredAuthor.email}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block uppercase font-bold tracking-wider mb-1">Membresía</span>
-                  <span className="text-orange-300 font-semibold flex items-center gap-1.5">
-                    <Crown className="w-3.5 h-3.5 text-orange-400" />
-                    {registeredAuthor.plan} (Activa 365 días)
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block uppercase font-bold tracking-wider mb-1">Código Maestro Canjeado</span>
-                  <span className="font-mono text-cyan-300 bg-cyan-950/40 px-2.5 py-0.5 rounded-full border border-cyan-500/30">
-                    {registeredAuthor.masterCode}
-                  </span>
-                </div>
-              </div>
-
-              {/* Subdomain link preview */}
-              <div className="pt-3 border-t border-slate-800/80">
-                <span className="text-slate-500 text-xs block uppercase font-bold tracking-wider mb-1.5">
-                  Panel Personalizado & Subdominio Oficial (Netlify)
-                </span>
-                <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-900 border border-cyan-500/30">
-                  <div className="flex items-center gap-2 overflow-hidden">
-                    <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <span className="font-mono text-sm text-cyan-300 truncate">
-                      https://{registeredAuthor.slug}.buenosmalosconsejos.com
-                    </span>
+                  <label className="block text-xs uppercase font-bold tracking-wider text-slate-300 mb-1.5">
+                    Correo Electrónico <span className="text-cyan-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                      <Mail className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <input
+                      type="email"
+                      required
+                      value={loginEmail}
+                      onChange={(e) => {
+                        setLoginEmail(e.target.value);
+                        setLoginError(null);
+                      }}
+                      placeholder="autor@editorial.com"
+                      autoFocus
+                      className="w-full pl-11 pr-4 py-3 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition"
+                    />
                   </div>
+                </div>
+
+                {/* Contraseña */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs uppercase font-bold tracking-wider text-slate-300">
+                      Contraseña <span className="text-cyan-400">*</span>
+                    </label>
+                  </div>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                      <Lock className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <input
+                      type={showLoginPassword ? 'text' : 'password'}
+                      required
+                      value={loginPassword}
+                      onChange={(e) => {
+                        setLoginPassword(e.target.value);
+                        setLoginError(null);
+                      }}
+                      placeholder="Tu contraseña registrada"
+                      className="w-full pl-11 pr-12 py-3 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white text-sm placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-cyan-400 transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowLoginPassword(!showLoginPassword)}
+                      className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-white"
+                      title={showLoginPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+                    >
+                      {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Error Banner */}
+                {loginError && (
+                  <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-600/60 text-rose-200 text-xs flex items-start gap-3 animate-fade-in">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <span className="font-bold text-white">Error al iniciar sesión:</span> {loginError}
+                    </div>
+                  </div>
+                )}
+
+                {/* Submit button */}
+                <button
+                  type="submit"
+                  disabled={isLoggingIn || !loginEmail.trim() || !loginPassword}
+                  className="w-full mt-3 py-4 px-8 rounded-full font-extrabold text-sm bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 hover:from-sky-300 hover:via-cyan-300 hover:to-emerald-300 text-slate-950 shadow-xl shadow-cyan-500/25 border border-cyan-100/60 flex items-center justify-center gap-2 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  {isLoggingIn ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                      <span>Autenticando credenciales...</span>
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="w-4 h-4" />
+                      <span>Ingresar al Panel de Gestión</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+
+                {/* Switch to Activation tab helper */}
+                <div className="pt-4 text-center text-xs text-slate-400">
+                  ¿Es tu primera vez y tienes un Código Maestro?{' '}
                   <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(`https://${registeredAuthor.slug}.buenosmalosconsejos.com`);
-                      setCopiedLink(true);
-                      setTimeout(() => setCopiedLink(false), 2000);
-                    }}
-                    className="text-xs px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-200 border border-slate-700 hover:border-cyan-500/40 flex items-center gap-1.5 transition shrink-0 ml-2"
+                    type="button"
+                    onClick={() => setActiveTab('activate')}
+                    className="text-cyan-400 hover:text-cyan-300 font-semibold underline underline-offset-2 ml-1"
                   >
-                    {copiedLink ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-cyan-400" />}
-                    <span>{copiedLink ? 'Copiado' : 'Copiar'}</span>
+                    Activar mi cuenta aquí
                   </button>
                 </div>
-              </div>
-
-              {/* Cloud Space Details */}
-              <div className="p-4 sm:p-5 rounded-2xl bg-slate-900/90 border border-slate-800/90 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
-                      <HardDrive className="w-4 h-4 text-cyan-400" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                        <span>Espacio en la Nube Aprovisionado</span>
-                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">
-                          SINCRONIZADO
-                        </span>
-                      </h4>
-                      <p className="text-[11px] text-slate-400">
-                        Subcarpeta asignada bajo la raíz editorial oficial
-                      </p>
-                    </div>
-                  </div>
-
-                  {registeredAuthor.driveFolderUrl && (
-                    <a
-                      href={registeredAuthor.driveFolderUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-cyan-200 border border-cyan-500/40 transition hover:scale-105"
-                    >
-                      <span>Abrir Mi Carpeta</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  )}
-                </div>
-
-                <div className="bg-slate-950/90 rounded-xl p-3 border border-slate-800 text-xs space-y-1.5 font-mono">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-slate-400">
-                    <span>Nombre de Carpeta:</span>
-                    <span className="text-white font-semibold">
-                      {registeredAuthor.driveFolderName || `${registeredAuthor.name} (${registeredAuthor.slug})`}
-                    </span>
-                  </div>
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-slate-400">
-                    <span>ID de Carpeta:</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-cyan-300 font-semibold">{registeredAuthor.driveFolderId || 'Generado'}</span>
-                      {registeredAuthor.driveFolderId && (
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(registeredAuthor.driveFolderId!);
-                            setCopiedFolderId(true);
-                            setTimeout(() => setCopiedFolderId(false), 2000);
-                          }}
-                          className="text-[10px] text-slate-400 hover:text-white"
-                          title="Copiar ID"
-                        >
-                          {copiedFolderId ? '✓' : <Copy className="w-3 h-3" />}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Action buttons with rounded-full pill styling */}
-            <div className="flex flex-col sm:flex-row items-center gap-3">
-              <button
-                onClick={resetFlow}
-                className="w-full sm:w-auto flex-1 py-4 px-6 rounded-full border border-slate-700 hover:bg-slate-800 hover:border-cyan-500/40 text-slate-300 hover:text-white text-sm font-semibold flex items-center justify-center gap-2 transition"
-              >
-                <RotateCcw className="w-4 h-4 text-slate-400" />
-                <span>Registrar Otro Autor</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  window.open(`https://${registeredAuthor.slug}.buenosmalosconsejos.com`, '_blank');
-                }}
-                className="w-full sm:w-auto flex-1 py-4 px-8 rounded-full font-extrabold text-sm bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 hover:from-sky-300 hover:via-cyan-300 hover:to-emerald-300 text-slate-950 shadow-xl shadow-cyan-500/25 border border-cyan-100/60 flex items-center justify-center gap-2 transition hover:scale-[1.01]"
-              >
-                <span>Acceder a Mi Panel Editorial</span>
-                <ExternalLink className="w-4 h-4 text-slate-950" />
-              </button>
-            </div>
+              </form>
+            )}
           </div>
         )}
       </main>
@@ -1218,16 +1347,16 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© {new Date().getFullYear()} Buenos Malos Consejos. Plataforma editorial para autores independientes.</p>
+          <p>© {new Date().getFullYear()} Buenos Malos Consejos. Plataforma editorial centralizada.</p>
           <div className="flex items-center space-x-4 text-slate-400">
             <span className="flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
-              Verificación Criptográfica de Códigos
+              Firebase Authentication & Firestore
             </span>
             <span>•</span>
             <span className="flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-              Aprovisionamiento Editorial Instantáneo
+              Gestión Editorial Centralizada
             </span>
           </div>
         </div>

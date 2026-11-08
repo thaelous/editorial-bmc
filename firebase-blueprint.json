@@ -2,7 +2,7 @@
   "entities": {
     "MasterCode": {
       "title": "MasterCode",
-      "description": "Annual membership master code for author onboarding on BMC Creators",
+      "description": "Annual membership master code for author onboarding on Buenos Malos Consejos",
       "type": "object",
       "properties": {
         "code": {
@@ -37,7 +37,7 @@
     },
     "Author": {
       "title": "Author",
-      "description": "Registered author profile with customized subdomain slug and Google Drive integration status",
+      "description": "Registered author profile in centralized editorial platform with Google Drive integration status",
       "type": "object",
       "properties": {
         "name": {
@@ -50,10 +50,15 @@
           "maxLength": 120,
           "description": "Contact and account email"
         },
-        "slug": {
+        "role": {
           "type": "string",
-          "maxLength": 60,
-          "description": "Subdomain handle for author portal"
+          "maxLength": 30,
+          "description": "User role in editorial platform (e.g. author, admin)"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Firebase Authentication User ID"
         },
         "masterCode": {
           "type": "string",
@@ -94,7 +99,7 @@
           "description": "Creation timestamp"
         }
       },
-      "required": ["name", "email", "slug", "masterCode", "driveSyncReady", "membershipStatus"]
+      "required": ["name", "email", "masterCode", "driveSyncReady", "membershipStatus"]
     }
   },
   "firestore": {
@@ -104,7 +109,7 @@
     },
     "/authors/{authorId}": {
       "schema": "Author",
-      "description": "Collection of registered BMC authors"
+      "description": "Collection of registered authors in centralized editorial platform"
     }
   }
 }

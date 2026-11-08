@@ -27,8 +27,6 @@ service cloud.firestore {
                     && request.resource.data.name.size() <= 100
                     && request.resource.data.email is string
                     && request.resource.data.email.size() <= 120
-                    && request.resource.data.slug is string
-                    && request.resource.data.slug.size() <= 60
                     && request.resource.data.masterCode is string
                     && request.resource.data.masterCode.size() <= 64;
       allow update: if false;
