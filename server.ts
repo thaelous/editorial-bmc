@@ -34,8 +34,6 @@ if (process.env.VITE_FIREBASE_APP_ID) {
   process.env.VITE_FIREBASE_APP_ID = sanitize(process.env.VITE_FIREBASE_APP_ID);
 }
 
-
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
