@@ -34,15 +34,7 @@ if (process.env.VITE_FIREBASE_APP_ID) {
   process.env.VITE_FIREBASE_APP_ID = sanitize(process.env.VITE_FIREBASE_APP_ID);
 }
 
-// In development, ensure Vite receives the required Firebase environment variables if empty
-if (!process.env.VITE_FIREBASE_API_KEY) {
-  process.env.VITE_FIREBASE_API_KEY = 'AIzaSyDRARil2rIj5ykaL5j9jMizhlpEgVEb898';
-  process.env.VITE_FIREBASE_AUTH_DOMAIN = 'gen-lang-client-0713667882.firebaseapp.com';
-  process.env.VITE_FIREBASE_PROJECT_ID = 'gen-lang-client-0713667882';
-  process.env.VITE_FIREBASE_STORAGE_BUCKET = 'gen-lang-client-0713667882.firebasestorage.app';
-  process.env.VITE_FIREBASE_MESSAGING_SENDER_ID = '178097549484';
-  process.env.VITE_FIREBASE_APP_ID = '1:178097549484:web:9b1da1dfd6a1761c5cef09';
-}
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
