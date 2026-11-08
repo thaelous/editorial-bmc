@@ -1,17 +1,8 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useEffect } from 'react';
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-  User as FirebaseUser,
-} from 'firebase/auth';
-import {
+  getFirestore,
+  Firestore,
   collection,
   query,
   where,
@@ -20,8 +11,16 @@ import {
   updateDoc,
   doc,
   onSnapshot,
-  getDocFromServer,
 } from 'firebase/firestore';
+import {
+  getAuth,
+  Auth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  User as FirebaseUser,
+} from 'firebase/auth';
 import confetti from 'canvas-confetti';
 import {
   KeyRound,
@@ -56,9 +55,64 @@ import {
   Layers,
 } from 'lucide-react';
 
-import { db, auth, firebaseConfig, firebaseStatus } from './firebase.ts';
-export { db, auth, firebaseConfig, firebaseStatus };
+/**
+ * Sanitiza valores de variables de entorno para evitar comillas, espacios accidentales o caracteres no ASCII
+ */
+function sanitizeEnvValue(val: unknown): string {
+  if (val === undefined || val === null) return '';
+  return String(val)
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/[\s\u200B\uFEFF\u00A0\r\n\t]/g, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
 
+function sanitizeApiKey(rawKey: unknown): string {
+  return sanitizeEnvValue(rawKey).replace(/[^A-Za-z0-9_-]/g, '');
+}
+
+/**
+ * 1. Inicialización de Firebase con credenciales 100% leídas desde variables de entorno de Vite (VITE_*)
+ * NUNCA se escriben llaves en texto plano en este archivo para evitar bloqueos en Netlify.
+ */
+export const firebaseConfig = {
+  apiKey: sanitizeApiKey(import.meta.env.VITE_FIREBASE_API_KEY),
+  authDomain: sanitizeEnvValue(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN),
+  projectId: sanitizeEnvValue(import.meta.env.VITE_FIREBASE_PROJECT_ID),
+  storageBucket: sanitizeEnvValue(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET),
+  messagingSenderId: sanitizeEnvValue(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID),
+  appId: sanitizeEnvValue(import.meta.env.VITE_FIREBASE_APP_ID),
+  measurementId: sanitizeEnvValue(import.meta.env.VITE_FIREBASE_MEASUREMENT_ID) || undefined,
+};
+
+const isKeyValid = /^[A-Za-z0-9_-]{30,45}$/.test(firebaseConfig.apiKey);
+const isMissingKey = !firebaseConfig.apiKey;
+
+export const isFirebaseConfigured = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.projectId &&
+  isKeyValid
+);
+
+export const firebaseStatus = {
+  isConfigured: isFirebaseConfigured,
+  hasKeyError: !isKeyValid || isMissingKey,
+  detectedErrorDetail: isMissingKey
+    ? 'Variables de entorno no detectadas. Configura VITE_FIREBASE_API_KEY y VITE_FIREBASE_PROJECT_ID en las variables de entorno de Netlify.'
+    : !isKeyValid
+    ? 'El formato de VITE_FIREBASE_API_KEY no es válido (debe tener entre 30 y 45 caracteres válidos sin tildes ni espacios).'
+    : null,
+};
+
+// Inicialización de la aplicación de Firebase
+export const app: FirebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+
+// Inicialización limpia de Firestore sin pasar argumentos inválidos como 'none' ni '(default)'
+export const db: Firestore = getFirestore(app);
+
+// Inicialización limpia de Firebase Auth
+export const auth: Auth = getAuth(app);
 
 const ROOT_DRIVE_FOLDER_ID = '1vncgfUnvay174cvzERBqt_hyqRBSoY8w';
 
@@ -102,7 +156,7 @@ function getAuthErrorMessage(errorCode: string): string {
       return 'El método de inicio de sesión con Correo/Contraseña (Email/Password) no está habilitado en Firebase Authentication. Ve a Firebase Console > Authentication > Sign-in method y habilítalo.';
     case 'auth/api-key-not-valid':
     case 'auth/invalid-api-key':
-      return 'La clave VITE_FIREBASE_API_KEY no es válida para este proyecto de Firebase. Revisa que no contenga tildes o caracteres especiales (como la "í" en SEMdíQIU) y cópiala directamente desde la consola de Firebase.';
+      return 'La API Key de Firebase no es válida. Revisa las variables de entorno (VITE_FIREBASE_API_KEY) en el panel de Netlify.';
     default:
       return 'Ocurrió un error en la autenticación. Verifica tus datos e inténtalo de nuevo.';
   }
