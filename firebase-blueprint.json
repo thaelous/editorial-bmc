@@ -1,0 +1,110 @@
+{
+  "entities": {
+    "MasterCode": {
+      "title": "MasterCode",
+      "description": "Annual membership master code for author onboarding on BMC Creators",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Unique master redemption code"
+        },
+        "used": {
+          "type": "boolean",
+          "description": "Whether this code has already been redeemed"
+        },
+        "plan": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Tier of membership, e.g. annual_creator"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        },
+        "usedAt": {
+          "type": "string",
+          "description": "Redemption timestamp"
+        },
+        "usedBy": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Email or ID of author who redeemed it"
+        }
+      },
+      "required": ["code", "used"]
+    },
+    "Author": {
+      "title": "Author",
+      "description": "Registered author profile with customized subdomain slug and Google Drive integration status",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Full author pen name or legal name"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Contact and account email"
+        },
+        "slug": {
+          "type": "string",
+          "maxLength": 60,
+          "description": "Subdomain handle for author portal"
+        },
+        "masterCode": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Master code used during registration"
+        },
+        "membershipStatus": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Current status of annual membership"
+        },
+        "driveSyncReady": {
+          "type": "boolean",
+          "description": "Flag indicating author is queued for Google Drive root folder provisioning"
+        },
+        "driveFolderStatus": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Status of Drive folder connection (e.g. created, pending_root_allocation)"
+        },
+        "driveFolderId": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Google Drive unique folder ID created in root folder"
+        },
+        "driveFolderUrl": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Direct Google Drive URL for the author folder"
+        },
+        "driveRootFolderId": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Parent root folder ID (1vncgfUnvay174cvzERBqt_hyqRBSoY8w)"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["name", "email", "slug", "masterCode", "driveSyncReady", "membershipStatus"]
+    }
+  },
+  "firestore": {
+    "/master_codes/{codeId}": {
+      "schema": "MasterCode",
+      "description": "Collection of membership master codes"
+    },
+    "/authors/{authorId}": {
+      "schema": "Author",
+      "description": "Collection of registered BMC authors"
+    }
+  }
+}

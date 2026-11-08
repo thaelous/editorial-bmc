@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Master codes for author annual registration
+    match /master_codes/{codeId} {
+      // Anyone can query or check their master code to validate it
+      allow read: if true;
+      
+      // Allow creating or seeding master codes (if not already used) and updating to used = true
+      allow create: if request.resource.data.code is string
+                    && request.resource.data.code.size() <= 64
+                    && request.resource.data.used is bool;
+                    
+      allow update: if request.resource.data.used is bool;
+    }
+
+    // Authors collection
+    match /authors/{authorId} {
+      allow read: if true;
+      allow create: if request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 100
+                    && request.resource.data.email is string
+                    && request.resource.data.email.size() <= 120
+                    && request.resource.data.slug is string
+                    && request.resource.data.slug.size() <= 60
+                    && request.resource.data.masterCode is string
+                    && request.resource.data.masterCode.size() <= 64;
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

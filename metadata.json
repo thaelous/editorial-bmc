@@ -1,0 +1,8 @@
+{
+  "name": "BMC Creators - Portal de Registro",
+  "description": "Portal de registro exclusivo con Código Maestro para autores independientes de BMC Creators con integración a Firestore y Google Drive.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
