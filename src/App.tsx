@@ -4,9 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
-  getFirestore,
   collection,
   query,
   where,
@@ -42,11 +40,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 
-import firebaseConfig from '../firebase-applet-config.json';
-
-// Initialize Firebase
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+import { db } from './firebase.ts';
+export { db };
 
 const ROOT_DRIVE_FOLDER_ID = '1vncgfUnvay174cvzERBqt_hyqRBSoY8w';
 
